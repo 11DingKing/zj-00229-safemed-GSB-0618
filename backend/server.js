@@ -575,9 +575,45 @@ const checkOverdueAndDeduct = (task, now) => {
       now,
     );
 
-    return { is_overdue: 1, score_deducted: deduction, status: "overdue" };
+    return { is_overdue: 1, score_deducted: deduction, status: newStatus };
   }
   return null;
+};
+
+const syncAllOverdueTasks = (deptCondition = "", params = []) => {
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  let sql = "SELECT * FROM collaboration_tasks";
+  if (deptCondition) sql += " " + deptCondition;
+  const tasks = db.prepare(sql).all(...params);
+
+  const txn = db.transaction((taskList) => {
+    for (const task of taskList) {
+      if (
+        task.status !== "completed" &&
+        !task.is_overdue &&
+        new Date(task.deadline) < new Date(now)
+      ) {
+        const deduction = SCORE_MAP[task.urgency_level] || 1;
+        const newStatus =
+          task.status === "pending_acknowledge"
+            ? "pending_acknowledge"
+            : "overdue";
+        db.prepare(
+          "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = ? WHERE id = ?",
+        ).run(deduction, newStatus, task.id);
+        db.prepare(
+          `INSERT INTO task_receipts (task_id, action, department, operator, remark, created_at)
+           VALUES (?, '超时', ?, '系统', ?, ?)`,
+        ).run(
+          task.id,
+          task.receive_department,
+          `任务已超过时限，扣考核分 ${deduction} 分`,
+          now,
+        );
+      }
+    }
+  });
+  txn(tasks);
 };
 
 const enrichTask = (task) => {
@@ -675,6 +711,8 @@ app.get("/api/tasks", (req, res) => {
 
 app.get("/api/tasks/department/:dept/summary", (req, res) => {
   const { dept } = req.params;
+
+  syncAllOverdueTasks("WHERE receive_department = ?", [dept]);
 
   const pendingAck = db
     .prepare(
@@ -933,10 +971,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
   let finalDeduction = task.score_deducted || 0;
 
   if (!task.is_overdue && new Date(task.deadline) < new Date(now)) {
-    if (task.urgency_level === "critical") finalDeduction = 10;
-    else if (task.urgency_level === "high") finalDeduction = 5;
-    else if (task.urgency_level === "medium") finalDeduction = 3;
-    else finalDeduction = 1;
+    finalDeduction = SCORE_MAP[task.urgency_level] || 1;
   }
 
   db.prepare(
@@ -1003,7 +1038,9 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
     params.push(department);
   }
 
-  const rows = db
+  syncAllOverdueTasks(deptCondition, params);
+
+  const freshRows = db
     .prepare(
       `
     SELECT receive_department as department,
@@ -1011,7 +1048,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
            SUM(CASE WHEN status = 'completed' AND is_overdue = 0 THEN 1 ELSE 0 END) as on_time,
            SUM(CASE WHEN is_overdue = 1 THEN 1 ELSE 0 END) as overdue,
-           SUM(score_deducted) as total_deduction,
+           SUM(COALESCE(score_deducted, 0)) as total_deduction,
            AVG(CASE 
              WHEN status = 'completed' AND completion_time IS NOT NULL AND assign_time IS NOT NULL
              THEN CAST((julianday(completion_time) - julianday(assign_time)) * 24 AS REAL)
@@ -1025,7 +1062,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
     )
     .all(...params);
 
-  const result = rows.map((r) => {
+  const result = freshRows.map((r) => {
     const deadline_rate =
       r.completed > 0
         ? Number(((r.on_time / r.completed) * 100).toFixed(1))
@@ -1104,6 +1141,8 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
 });
 
 app.get("/api/stats/tasks/overview", (req, res) => {
+  syncAllOverdueTasks();
+
   const total = db
     .prepare("SELECT COUNT(*) as count FROM collaboration_tasks")
     .get().count;
