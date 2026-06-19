@@ -54,6 +54,15 @@ const DEADLINE_HOURS = {
   normal: 48,
 };
 
+const SCORE_DEDUCTION = {
+  critical: 10,
+  high: 5,
+  medium: 3,
+  normal: 1,
+};
+
+const getDeduction = (urgency) => SCORE_DEDUCTION[urgency] || 1;
+
 app.get("/api/incidents", (req, res) => {
   const { status, type, hospital, keyword, sort } = req.query;
 
@@ -550,16 +559,10 @@ app.get("/api/dict", (req, res) => {
 const checkOverdueAndDeduct = (task, now) => {
   if (
     task.status !== "completed" &&
-    task.status !== "pending_acknowledge" &&
     !task.is_overdue &&
     new Date(task.deadline) < new Date(now)
   ) {
-    const hours = DEADLINE_HOURS[task.urgency_level] || 48;
-    let deduction = 0;
-    if (task.urgency_level === "critical") deduction = 10;
-    else if (task.urgency_level === "high") deduction = 5;
-    else if (task.urgency_level === "medium") deduction = 3;
-    else deduction = 1;
+    const deduction = getDeduction(task.urgency_level);
 
     db.prepare(
       "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = 'overdue' WHERE id = ?",
@@ -578,6 +581,18 @@ const checkOverdueAndDeduct = (task, now) => {
     return { is_overdue: 1, score_deducted: deduction, status: "overdue" };
   }
   return null;
+};
+
+const runOverdueCheck = () => {
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const pending = db
+    .prepare(
+      "SELECT * FROM collaboration_tasks WHERE status != 'completed' AND is_overdue = 0 AND deadline < ?",
+    )
+    .all(now);
+  for (const task of pending) {
+    checkOverdueAndDeduct(task, now);
+  }
 };
 
 const enrichTask = (task) => {
@@ -616,6 +631,7 @@ const enrichTask = (task) => {
 };
 
 app.get("/api/tasks", (req, res) => {
+  runOverdueCheck();
   const {
     status,
     department,
@@ -674,6 +690,7 @@ app.get("/api/tasks", (req, res) => {
 });
 
 app.get("/api/tasks/department/:dept/summary", (req, res) => {
+  runOverdueCheck();
   const { dept } = req.params;
 
   const pendingAck = db
@@ -710,6 +727,7 @@ app.get("/api/tasks/department/:dept/summary", (req, res) => {
 });
 
 app.get("/api/tasks/:id", (req, res) => {
+  runOverdueCheck();
   const { id } = req.params;
   const task = db
     .prepare("SELECT * FROM collaboration_tasks WHERE id = ?")
@@ -752,6 +770,7 @@ app.get("/api/tasks/:id", (req, res) => {
 });
 
 app.get("/api/incidents/:id/tasks", (req, res) => {
+  runOverdueCheck();
   const { id } = req.params;
   const tasks = db
     .prepare(
@@ -852,6 +871,7 @@ app.post("/api/incidents/:id/tasks", (req, res) => {
 });
 
 app.post("/api/tasks/:id/acknowledge", (req, res) => {
+  runOverdueCheck();
   const { id } = req.params;
   const { receive_user, receive_remark } = req.body;
 
@@ -908,6 +928,7 @@ app.post("/api/tasks/:id/acknowledge", (req, res) => {
 });
 
 app.post("/api/tasks/:id/complete", (req, res) => {
+  runOverdueCheck();
   const { id } = req.params;
   const { completion_result, operator } = req.body;
 
@@ -933,10 +954,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
   let finalDeduction = task.score_deducted || 0;
 
   if (!task.is_overdue && new Date(task.deadline) < new Date(now)) {
-    if (task.urgency_level === "critical") finalDeduction = 10;
-    else if (task.urgency_level === "high") finalDeduction = 5;
-    else if (task.urgency_level === "medium") finalDeduction = 3;
-    else finalDeduction = 1;
+    finalDeduction = getDeduction(task.urgency_level);
   }
 
   db.prepare(
@@ -994,6 +1012,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
 });
 
 app.get("/api/stats/tasks/deadline-rate", (req, res) => {
+  runOverdueCheck();
   const { department } = req.query;
 
   let deptCondition = "";
@@ -1067,6 +1086,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
 });
 
 app.get("/api/stats/tasks/drilldown", (req, res) => {
+  runOverdueCheck();
   const { department, status } = req.query;
 
   let sql = `
@@ -1082,8 +1102,12 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
     params.push(department);
   }
   if (status && status !== "all") {
-    sql += " AND t.status = ?";
-    params.push(status);
+    if (status === "active") {
+      sql += " AND t.status IN ('processing', 'acknowledged', 'overdue')";
+    } else {
+      sql += " AND t.status = ?";
+      params.push(status);
+    }
   }
 
   sql += " ORDER BY t.assign_time DESC";
@@ -1104,6 +1128,7 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
 });
 
 app.get("/api/stats/tasks/overview", (req, res) => {
+  runOverdueCheck();
   const total = db
     .prepare("SELECT COUNT(*) as count FROM collaboration_tasks")
     .get().count;
