@@ -40,7 +40,12 @@
       </div>
     </div>
 
-    <el-tabs v-model="activeTab" type="card" class="task-tabs" @tab-change="fetchCurrentTab">
+    <el-tabs
+      v-model="activeTab"
+      type="card"
+      class="task-tabs"
+      @tab-change="fetchCurrentTab"
+    >
       <el-tab-pane label="待签收" name="pending_acknowledge">
         <div v-if="pendingList.length === 0" class="empty-tip">
           <el-icon size="48" color="#d1d5db"><CircleCheck /></el-icon>
@@ -50,17 +55,30 @@
           <div
             v-for="task in pendingList"
             :key="task.id"
-            class="task-card task-ack"
+            :class="[
+              'task-card',
+              task.is_overdue ? 'task-overdue' : 'task-ack',
+            ]"
           >
             <div class="task-head">
               <div class="task-no">{{ task.task_no }}</div>
-              <span
-                :class="[
-                  'urgency-tag',
-                  'urgency-' + task.urgency_level,
-                ]"
-                >{{ task.urgency_text }}</span
-              >
+              <div style="display: flex; gap: 6px">
+                <span
+                  v-if="task.is_overdue"
+                  style="
+                    background: #fee2e2;
+                    color: #b91c1c;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                  "
+                  >已超时 -{{ task.score_deducted }}分</span
+                >
+                <span
+                  :class="['urgency-tag', 'urgency-' + task.urgency_level]"
+                  >{{ task.urgency_text }}</span
+                >
+              </div>
             </div>
             <div class="task-title">{{ task.title }}</div>
             <div class="task-desc" v-if="task.description">
@@ -69,8 +87,16 @@
             <div class="task-meta">
               <div>
                 <el-icon><Link /></el-icon>
-                <span class="inc-link" @click="$emit('view-incident', task.incident_id)">
-                  关联事件: {{ task.incident ? task.incident.incident_no : '#' + task.incident_id }}
+                <span
+                  class="inc-link"
+                  @click="$emit('view-incident', task.incident_id)"
+                >
+                  关联事件:
+                  {{
+                    task.incident
+                      ? task.incident.incident_no
+                      : "#" + task.incident_id
+                  }}
                 </span>
               </div>
               <div>
@@ -79,11 +105,16 @@
               </div>
               <div>
                 <el-icon><Timer /></el-icon>
-                <span :class="{ 'text-danger': isUrgent(task) }">
+                <span
+                  :class="{ 'text-danger': task.is_overdue || isUrgent(task) }"
+                >
                   时限: {{ formatTime(task.deadline) }}
-                  <span v-if="task.remaining_hours !== null">
+                  <span
+                    v-if="!task.is_overdue && task.remaining_hours !== null"
+                  >
                     (剩{{ task.remaining_hours }}h)
                   </span>
+                  <span v-if="task.is_overdue"> (已超时) </span>
                 </span>
               </div>
               <div>
@@ -115,20 +146,27 @@
           <div
             v-for="task in processingList"
             :key="task.id"
-            :class="['task-card', task.is_overdue ? 'task-overdue' : 'task-proc']"
+            :class="[
+              'task-card',
+              task.is_overdue ? 'task-overdue' : 'task-proc',
+            ]"
           >
             <div class="task-head">
               <div class="task-no">{{ task.task_no }}</div>
               <div style="display: flex; gap: 6px">
                 <span
                   v-if="task.is_overdue"
-                  style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:4px;font-size:12px"
-                >已超时 -{{ task.score_deducted }}分</span>
+                  style="
+                    background: #fee2e2;
+                    color: #b91c1c;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                  "
+                  >已超时 -{{ task.score_deducted }}分</span
+                >
                 <span
-                  :class="[
-                    'urgency-tag',
-                    'urgency-' + task.urgency_level,
-                  ]"
+                  :class="['urgency-tag', 'urgency-' + task.urgency_level]"
                   >{{ task.urgency_text }}</span
                 >
               </div>
@@ -140,25 +178,37 @@
             <div class="task-meta">
               <div>
                 <el-icon><Link /></el-icon>
-                <span class="inc-link" @click="$emit('view-incident', task.incident_id)">
-                  关联事件: {{ task.incident ? task.incident.incident_no : '#' + task.incident_id }}
+                <span
+                  class="inc-link"
+                  @click="$emit('view-incident', task.incident_id)"
+                >
+                  关联事件:
+                  {{
+                    task.incident
+                      ? task.incident.incident_no
+                      : "#" + task.incident_id
+                  }}
                 </span>
               </div>
               <div>
                 <el-icon><UserFilled /></el-icon>
-                签收人: {{ task.receive_user || '-' }}
-                <span v-if="task.receive_time"> / {{ formatTime(task.receive_time) }}</span>
+                签收人: {{ task.receive_user || "-" }}
+                <span v-if="task.receive_time">
+                  / {{ formatTime(task.receive_time) }}</span
+                >
               </div>
               <div>
                 <el-icon><Timer /></el-icon>
-                <span :class="{ 'text-danger': task.is_overdue || isUrgent(task) }">
+                <span
+                  :class="{ 'text-danger': task.is_overdue || isUrgent(task) }"
+                >
                   时限: {{ formatTime(task.deadline) }}
-                  <span v-if="!task.is_overdue && task.remaining_hours !== null">
+                  <span
+                    v-if="!task.is_overdue && task.remaining_hours !== null"
+                  >
                     (剩{{ task.remaining_hours }}h)
                   </span>
-                  <span v-if="task.is_overdue">
-                    (已超时)
-                  </span>
+                  <span v-if="task.is_overdue"> (已超时) </span>
                 </span>
               </div>
               <div>
@@ -193,24 +243,38 @@
           <div
             v-for="task in completedList"
             :key="task.id"
-            :class="['task-card', task.is_overdue ? 'task-overdue' : 'task-done']"
+            :class="[
+              'task-card',
+              task.is_overdue ? 'task-overdue' : 'task-done',
+            ]"
           >
             <div class="task-head">
               <div class="task-no">{{ task.task_no }}</div>
               <div style="display: flex; gap: 6px">
                 <span
                   v-if="task.is_overdue"
-                  style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:4px;font-size:12px"
-                >超时完成 -{{ task.score_deducted }}分</span>
+                  style="
+                    background: #fee2e2;
+                    color: #b91c1c;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                  "
+                  >超时完成 -{{ task.score_deducted }}分</span
+                >
                 <span
                   v-else
-                  style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:4px;font-size:12px"
-                >按时完成</span>
+                  style="
+                    background: #d1fae5;
+                    color: #065f46;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                  "
+                  >按时完成</span
+                >
                 <span
-                  :class="[
-                    'urgency-tag',
-                    'urgency-' + task.urgency_level,
-                  ]"
+                  :class="['urgency-tag', 'urgency-' + task.urgency_level]"
                   >{{ task.urgency_text }}</span
                 >
               </div>
@@ -223,13 +287,21 @@
             <div class="task-meta">
               <div>
                 <el-icon><Link /></el-icon>
-                <span class="inc-link" @click="$emit('view-incident', task.incident_id)">
-                  关联事件: {{ task.incident ? task.incident.incident_no : '#' + task.incident_id }}
+                <span
+                  class="inc-link"
+                  @click="$emit('view-incident', task.incident_id)"
+                >
+                  关联事件:
+                  {{
+                    task.incident
+                      ? task.incident.incident_no
+                      : "#" + task.incident_id
+                  }}
                 </span>
               </div>
               <div>
                 <el-icon><UserFilled /></el-icon>
-                签收人: {{ task.receive_user || '-' }}
+                签收人: {{ task.receive_user || "-" }}
               </div>
               <div>
                 <el-icon><Timer /></el-icon>
@@ -255,10 +327,16 @@
       :close-on-click-modal="false"
     >
       <div v-if="currentTask" class="dialog-summary">
-        <div class="summary-row-title">{{ currentTask.task_no }} - {{ currentTask.title }}</div>
+        <div class="summary-row-title">
+          {{ currentTask.task_no }} - {{ currentTask.title }}
+        </div>
         <div class="summary-row-item">
           <span>关联事件:</span>
-          {{ currentTask.incident ? currentTask.incident.incident_no : '#' + currentTask.incident_id }}
+          {{
+            currentTask.incident
+              ? currentTask.incident.incident_no
+              : "#" + currentTask.incident_id
+          }}
         </div>
         <div class="summary-row-item">
           <span>处置时限:</span>
@@ -267,7 +345,10 @@
       </div>
       <el-form :model="ackForm" label-width="80px">
         <el-form-item label="签收人">
-          <el-input v-model="ackForm.receive_user" placeholder="请输入签收人姓名" />
+          <el-input
+            v-model="ackForm.receive_user"
+            placeholder="请输入签收人姓名"
+          />
         </el-form-item>
         <el-form-item label="签收备注">
           <el-input
@@ -291,20 +372,27 @@
       :close-on-click-modal="false"
     >
       <div v-if="currentTask" class="dialog-summary">
-        <div class="summary-row-title">{{ currentTask.task_no }} - {{ currentTask.title }}</div>
+        <div class="summary-row-title">
+          {{ currentTask.task_no }} - {{ currentTask.title }}
+        </div>
         <div class="summary-row-item">
           <span>签收人:</span>
-          {{ currentTask.receive_user || '-' }}
+          {{ currentTask.receive_user || "-" }}
         </div>
         <div class="summary-row-item">
           <span>原定时限:</span>
           {{ formatTime(currentTask.deadline) }}
-          <span v-if="currentTask.is_overdue" class="text-danger">(已超时)</span>
+          <span v-if="currentTask.is_overdue" class="text-danger"
+            >(已超时)</span
+          >
         </div>
       </div>
       <el-form :model="completeForm" label-width="80px">
         <el-form-item label="操作人">
-          <el-input v-model="completeForm.operator" placeholder="请输入操作人姓名" />
+          <el-input
+            v-model="completeForm.operator"
+            placeholder="请输入操作人姓名"
+          />
         </el-form-item>
         <el-form-item label="完成情况">
           <el-input
@@ -336,7 +424,9 @@
             </div>
             <div class="detail-item">
               <span class="label">紧急程度:</span>
-              <span :class="['urgency-tag', 'urgency-' + taskDetail.urgency_level]">
+              <span
+                :class="['urgency-tag', 'urgency-' + taskDetail.urgency_level]"
+              >
                 {{ taskDetail.urgency_text }}
               </span>
             </div>
@@ -353,16 +443,25 @@
               <span class="label">关联事件:</span>
               <span
                 class="inc-link"
-                @click="detailVisible = false; $emit('view-incident', taskDetail.incident_id)"
+                @click="
+                  detailVisible = false;
+                  $emit('view-incident', taskDetail.incident_id);
+                "
               >
-                {{ taskDetail.incident ? taskDetail.incident.incident_no : '#' + taskDetail.incident_id }}
+                {{
+                  taskDetail.incident
+                    ? taskDetail.incident.incident_no
+                    : "#" + taskDetail.incident_id
+                }}
               </span>
             </div>
           </div>
 
           <h4 class="section-h4">任务描述</h4>
           <div class="desc-block">
-            <div><strong>{{ taskDetail.title }}</strong></div>
+            <div>
+              <strong>{{ taskDetail.title }}</strong>
+            </div>
             <div v-if="taskDetail.description" class="mt-4">
               {{ taskDetail.description }}
             </div>
@@ -372,7 +471,9 @@
           <div class="detail-grid">
             <div class="detail-item">
               <span class="label">派发时间:</span>
-              <span class="value">{{ formatTime(taskDetail.assign_time) }}</span>
+              <span class="value">{{
+                formatTime(taskDetail.assign_time)
+              }}</span>
             </div>
             <div class="detail-item">
               <span class="label">处置时限:</span>
@@ -382,23 +483,33 @@
             </div>
             <div class="detail-item">
               <span class="label">签收时间:</span>
-              <span class="value">{{ formatTime(taskDetail.receive_time) }}</span>
+              <span class="value">{{
+                formatTime(taskDetail.receive_time)
+              }}</span>
             </div>
             <div class="detail-item">
               <span class="label">完成时间:</span>
-              <span class="value">{{ formatTime(taskDetail.completion_time) }}</span>
+              <span class="value">{{
+                formatTime(taskDetail.completion_time)
+              }}</span>
             </div>
             <div class="detail-item">
               <span class="label">剩余/用时:</span>
               <span class="value">
-                {{ taskDetail.status === 'completed' 
-                  ? taskDetail.elapsed_hours + 'h' 
-                  : (taskDetail.remaining_hours !== null ? taskDetail.remaining_hours + 'h' : '-') }}
+                {{
+                  taskDetail.status === "completed"
+                    ? taskDetail.elapsed_hours + "h"
+                    : taskDetail.remaining_hours !== null
+                      ? taskDetail.remaining_hours + "h"
+                      : "-"
+                }}
               </span>
             </div>
             <div class="detail-item" v-if="taskDetail.is_overdue">
               <span class="label">超时扣分:</span>
-              <span class="text-danger">-{{ taskDetail.score_deducted }} 分</span>
+              <span class="text-danger"
+                >-{{ taskDetail.score_deducted }} 分</span
+              >
             </div>
           </div>
 
@@ -418,7 +529,7 @@
             </div>
             <div class="detail-item">
               <span class="label">签收人:</span>
-              <span class="value">{{ taskDetail.receive_user || '-' }}</span>
+              <span class="value">{{ taskDetail.receive_user || "-" }}</span>
             </div>
           </div>
 
@@ -443,7 +554,9 @@
               <div class="receipt-content">
                 <div class="receipt-head">
                   <span class="receipt-action">{{ r.action }}</span>
-                  <span class="receipt-time">{{ formatTime(r.created_at) }}</span>
+                  <span class="receipt-time">{{
+                    formatTime(r.created_at)
+                  }}</span>
                 </div>
                 <div class="receipt-meta">
                   {{ r.department }} / {{ r.operator }}
@@ -563,7 +676,10 @@ const fetchProcessing = () => {
     })
     .then((res) => {
       processingList.value = res.list.filter(
-        (t) => t.status === "processing" || t.status === "overdue" || t.status === "acknowledged",
+        (t) =>
+          t.status === "processing" ||
+          t.status === "acknowledged" ||
+          (t.status === "overdue" && t.receive_user),
       );
       completedList.value = res.list.filter((t) => t.status === "completed");
     });
