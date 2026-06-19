@@ -547,23 +547,21 @@ app.get("/api/dict", (req, res) => {
   });
 });
 
+const SCORE_MAP = { critical: 10, high: 5, medium: 3, normal: 1 };
+
 const checkOverdueAndDeduct = (task, now) => {
   if (
     task.status !== "completed" &&
-    task.status !== "pending_acknowledge" &&
     !task.is_overdue &&
     new Date(task.deadline) < new Date(now)
   ) {
-    const hours = DEADLINE_HOURS[task.urgency_level] || 48;
-    let deduction = 0;
-    if (task.urgency_level === "critical") deduction = 10;
-    else if (task.urgency_level === "high") deduction = 5;
-    else if (task.urgency_level === "medium") deduction = 3;
-    else deduction = 1;
+    const deduction = SCORE_MAP[task.urgency_level] || 1;
+    const newStatus =
+      task.status === "pending_acknowledge" ? "pending_acknowledge" : "overdue";
 
     db.prepare(
-      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = 'overdue' WHERE id = ?",
-    ).run(deduction, task.id);
+      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = ? WHERE id = ?",
+    ).run(deduction, newStatus, task.id);
 
     db.prepare(
       `INSERT INTO task_receipts (task_id, action, department, operator, remark, created_at)
@@ -661,6 +659,8 @@ app.get("/api/tasks", (req, res) => {
     incident_id,
     sort,
   } = req.query;
+
+  syncAllOverdueTasks();
 
   let sql = "SELECT * FROM collaboration_tasks WHERE 1=1";
   const params = [];
