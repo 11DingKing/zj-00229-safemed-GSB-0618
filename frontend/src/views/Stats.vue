@@ -651,7 +651,7 @@
           >
             <el-option label="全部状态" value="all" />
             <el-option label="待签收" value="pending_acknowledge" />
-            <el-option label="处置中" value="processing" />
+            <el-option label="处置中" value="active" />
             <el-option label="已完成" value="completed" />
             <el-option label="已超时" value="overdue" />
           </el-select>
