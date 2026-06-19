@@ -547,23 +547,28 @@ app.get("/api/dict", (req, res) => {
   });
 });
 
+const OVERDUE_DEDUCTION = {
+  critical: 10,
+  high: 5,
+  medium: 3,
+  normal: 1,
+};
+
+const calcDeduction = (urgency) =>
+  OVERDUE_DEDUCTION[urgency] !== undefined ? OVERDUE_DEDUCTION[urgency] : 1;
+
 const checkOverdueAndDeduct = (task, now) => {
   if (
     task.status !== "completed" &&
-    task.status !== "pending_acknowledge" &&
     !task.is_overdue &&
+    task.deadline &&
     new Date(task.deadline) < new Date(now)
   ) {
-    const hours = DEADLINE_HOURS[task.urgency_level] || 48;
-    let deduction = 0;
-    if (task.urgency_level === "critical") deduction = 10;
-    else if (task.urgency_level === "high") deduction = 5;
-    else if (task.urgency_level === "medium") deduction = 3;
-    else deduction = 1;
+    const deduction = calcDeduction(task.urgency_level);
 
     db.prepare(
-      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = 'overdue' WHERE id = ?",
-    ).run(deduction, task.id);
+      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = 'overdue', updated_at = ? WHERE id = ?",
+    ).run(deduction, now, task.id);
 
     db.prepare(
       `INSERT INTO task_receipts (task_id, action, department, operator, remark, created_at)
@@ -578,6 +583,20 @@ const checkOverdueAndDeduct = (task, now) => {
     return { is_overdue: 1, score_deducted: deduction, status: "overdue" };
   }
   return null;
+};
+
+const sweepOverdueTasks = () => {
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const candidates = db
+    .prepare(
+      `SELECT * FROM collaboration_tasks
+       WHERE status != 'completed'
+         AND is_overdue = 0
+         AND deadline IS NOT NULL
+         AND deadline < ?`,
+    )
+    .all(now);
+  candidates.forEach((task) => checkOverdueAndDeduct(task, now));
 };
 
 const enrichTask = (task) => {
@@ -626,12 +645,19 @@ app.get("/api/tasks", (req, res) => {
     sort,
   } = req.query;
 
+  sweepOverdueTasks();
+
   let sql = "SELECT * FROM collaboration_tasks WHERE 1=1";
   const params = [];
 
   if (status && status !== "all") {
-    sql += " AND status = ?";
-    params.push(status);
+    if (status === "pending_acknowledge") {
+      sql +=
+        " AND (status = 'pending_acknowledge' OR (status = 'overdue' AND receive_user IS NULL))";
+    } else {
+      sql += " AND status = ?";
+      params.push(status);
+    }
   }
   if (department && department !== "all") {
     sql += " AND receive_department = ?";
@@ -675,16 +701,23 @@ app.get("/api/tasks", (req, res) => {
 
 app.get("/api/tasks/department/:dept/summary", (req, res) => {
   const { dept } = req.params;
+  sweepOverdueTasks();
 
   const pendingAck = db
     .prepare(
-      "SELECT COUNT(*) as count FROM collaboration_tasks WHERE receive_department = ? AND status = 'pending_acknowledge'",
+      `SELECT COUNT(*) as count FROM collaboration_tasks
+       WHERE receive_department = ?
+         AND (status = 'pending_acknowledge'
+              OR (status = 'overdue' AND receive_user IS NULL))`,
     )
     .get(dept).count;
 
   const pendingHandle = db
     .prepare(
-      "SELECT COUNT(*) as count FROM collaboration_tasks WHERE receive_department = ? AND status IN ('acknowledged', 'processing')",
+      `SELECT COUNT(*) as count FROM collaboration_tasks
+       WHERE receive_department = ?
+         AND (status IN ('acknowledged', 'processing')
+              OR (status = 'overdue' AND receive_user IS NOT NULL))`,
     )
     .get(dept).count;
 
@@ -753,6 +786,7 @@ app.get("/api/tasks/:id", (req, res) => {
 
 app.get("/api/incidents/:id/tasks", (req, res) => {
   const { id } = req.params;
+  sweepOverdueTasks();
   const tasks = db
     .prepare(
       "SELECT * FROM collaboration_tasks WHERE incident_id = ? ORDER BY assign_time ASC",
@@ -933,10 +967,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
   let finalDeduction = task.score_deducted || 0;
 
   if (!task.is_overdue && new Date(task.deadline) < new Date(now)) {
-    if (task.urgency_level === "critical") finalDeduction = 10;
-    else if (task.urgency_level === "high") finalDeduction = 5;
-    else if (task.urgency_level === "medium") finalDeduction = 3;
-    else finalDeduction = 1;
+    finalDeduction = calcDeduction(task.urgency_level);
   }
 
   db.prepare(
@@ -995,6 +1026,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
 
 app.get("/api/stats/tasks/deadline-rate", (req, res) => {
   const { department } = req.query;
+  sweepOverdueTasks();
 
   let deptCondition = "";
   const params = [];
@@ -1068,6 +1100,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
 
 app.get("/api/stats/tasks/drilldown", (req, res) => {
   const { department, status } = req.query;
+  sweepOverdueTasks();
 
   let sql = `
     SELECT t.*, i.incident_no, i.type as incident_type, i.hospital, i.type as incident_type_raw
@@ -1082,8 +1115,13 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
     params.push(department);
   }
   if (status && status !== "all") {
-    sql += " AND t.status = ?";
-    params.push(status);
+    if (status === "pending_acknowledge") {
+      sql +=
+        " AND (t.status = 'pending_acknowledge' OR (t.status = 'overdue' AND t.receive_user IS NULL))";
+    } else {
+      sql += " AND t.status = ?";
+      params.push(status);
+    }
   }
 
   sql += " ORDER BY t.assign_time DESC";
@@ -1104,17 +1142,22 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
 });
 
 app.get("/api/stats/tasks/overview", (req, res) => {
+  sweepOverdueTasks();
   const total = db
     .prepare("SELECT COUNT(*) as count FROM collaboration_tasks")
     .get().count;
   const pendingAck = db
     .prepare(
-      "SELECT COUNT(*) as count FROM collaboration_tasks WHERE status = 'pending_acknowledge'",
+      `SELECT COUNT(*) as count FROM collaboration_tasks
+       WHERE status = 'pending_acknowledge'
+          OR (status = 'overdue' AND receive_user IS NULL)`,
     )
     .get().count;
   const processing = db
     .prepare(
-      "SELECT COUNT(*) as count FROM collaboration_tasks WHERE status IN ('acknowledged', 'processing')",
+      `SELECT COUNT(*) as count FROM collaboration_tasks
+       WHERE status IN ('acknowledged', 'processing')
+          OR (status = 'overdue' AND receive_user IS NOT NULL)`,
     )
     .get().count;
   const completed = db
