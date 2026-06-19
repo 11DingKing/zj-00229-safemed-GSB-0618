@@ -580,6 +580,18 @@ const checkOverdueAndDeduct = (task, now) => {
   return null;
 };
 
+const scanAllOverdueTasks = () => {
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const candidates = db
+    .prepare(
+      "SELECT * FROM collaboration_tasks WHERE status != 'completed' AND is_overdue = 0 AND deadline IS NOT NULL AND deadline < ?",
+    )
+    .all(now);
+  for (const task of candidates) {
+    checkOverdueAndDeduct(task, now);
+  }
+};
+
 const enrichTask = (task) => {
   const now = new Date().toISOString().replace("T", " ").slice(0, 19);
   const updated = checkOverdueAndDeduct(task, now);
@@ -630,8 +642,14 @@ app.get("/api/tasks", (req, res) => {
   const params = [];
 
   if (status && status !== "all") {
-    sql += " AND status = ?";
-    params.push(status);
+    if (status === "overdue") {
+      sql += " AND is_overdue = 1";
+    } else if (status === "processing") {
+      sql += " AND status IN ('processing', 'acknowledged', 'overdue')";
+    } else {
+      sql += " AND status = ?";
+      params.push(status);
+    }
   }
   if (department && department !== "all") {
     sql += " AND receive_department = ?";
@@ -675,6 +693,7 @@ app.get("/api/tasks", (req, res) => {
 
 app.get("/api/tasks/department/:dept/summary", (req, res) => {
   const { dept } = req.params;
+  scanAllOverdueTasks();
 
   const pendingAck = db
     .prepare(
@@ -933,10 +952,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
   let finalDeduction = task.score_deducted || 0;
 
   if (!task.is_overdue && new Date(task.deadline) < new Date(now)) {
-    if (task.urgency_level === "critical") finalDeduction = 10;
-    else if (task.urgency_level === "high") finalDeduction = 5;
-    else if (task.urgency_level === "medium") finalDeduction = 3;
-    else finalDeduction = 1;
+    finalDeduction = DEDUCTION_MAP[task.urgency_level] || 1;
   }
 
   db.prepare(
@@ -995,6 +1011,7 @@ app.post("/api/tasks/:id/complete", (req, res) => {
 
 app.get("/api/stats/tasks/deadline-rate", (req, res) => {
   const { department } = req.query;
+  scanAllOverdueTasks();
 
   let deptCondition = "";
   const params = [];
@@ -1011,7 +1028,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
            SUM(CASE WHEN status = 'completed' AND is_overdue = 0 THEN 1 ELSE 0 END) as on_time,
            SUM(CASE WHEN is_overdue = 1 THEN 1 ELSE 0 END) as overdue,
-           SUM(score_deducted) as total_deduction,
+           COALESCE(SUM(score_deducted), 0) as total_deduction,
            AVG(CASE 
              WHEN status = 'completed' AND completion_time IS NOT NULL AND assign_time IS NOT NULL
              THEN CAST((julianday(completion_time) - julianday(assign_time)) * 24 AS REAL)
@@ -1026,10 +1043,11 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
     .all(...params);
 
   const result = rows.map((r) => {
+    const pastDeadline = r.on_time + r.overdue;
     const deadline_rate =
-      r.completed > 0
-        ? Number(((r.on_time / r.completed) * 100).toFixed(1))
-        : 0;
+      pastDeadline > 0
+        ? Number(((r.on_time / pastDeadline) * 100).toFixed(1))
+        : 100;
     const completion_rate =
       r.total > 0 ? Number(((r.completed / r.total) * 100).toFixed(1)) : 0;
     return {
@@ -1054,10 +1072,11 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
     overdue: result.reduce((s, r) => s + r.overdue, 0),
     total_deduction: result.reduce((s, r) => s + r.total_deduction, 0),
   };
+  const summaryPastDeadline = summary.on_time + summary.overdue;
   summary.deadline_rate =
-    summary.completed > 0
-      ? Number(((summary.on_time / summary.completed) * 100).toFixed(1))
-      : 0;
+    summaryPastDeadline > 0
+      ? Number(((summary.on_time / summaryPastDeadline) * 100).toFixed(1))
+      : 100;
   summary.completion_rate =
     summary.total > 0
       ? Number(((summary.completed / summary.total) * 100).toFixed(1))
@@ -1068,6 +1087,7 @@ app.get("/api/stats/tasks/deadline-rate", (req, res) => {
 
 app.get("/api/stats/tasks/drilldown", (req, res) => {
   const { department, status } = req.query;
+  scanAllOverdueTasks();
 
   let sql = `
     SELECT t.*, i.incident_no, i.type as incident_type, i.hospital, i.type as incident_type_raw
@@ -1082,8 +1102,14 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
     params.push(department);
   }
   if (status && status !== "all") {
-    sql += " AND t.status = ?";
-    params.push(status);
+    if (status === "overdue") {
+      sql += " AND t.is_overdue = 1";
+    } else if (status === "processing") {
+      sql += " AND t.status IN ('processing', 'acknowledged', 'overdue')";
+    } else {
+      sql += " AND t.status = ?";
+      params.push(status);
+    }
   }
 
   sql += " ORDER BY t.assign_time DESC";
@@ -1104,6 +1130,7 @@ app.get("/api/stats/tasks/drilldown", (req, res) => {
 });
 
 app.get("/api/stats/tasks/overview", (req, res) => {
+  scanAllOverdueTasks();
   const total = db
     .prepare("SELECT COUNT(*) as count FROM collaboration_tasks")
     .get().count;
