@@ -54,6 +54,13 @@ const DEADLINE_HOURS = {
   normal: 48,
 };
 
+const DEDUCTION_MAP = {
+  critical: 10,
+  high: 5,
+  medium: 3,
+  normal: 1,
+};
+
 app.get("/api/incidents", (req, res) => {
   const { status, type, hospital, keyword, sort } = req.query;
 
@@ -550,19 +557,14 @@ app.get("/api/dict", (req, res) => {
 const checkOverdueAndDeduct = (task, now) => {
   if (
     task.status !== "completed" &&
-    task.status !== "pending_acknowledge" &&
     !task.is_overdue &&
+    task.deadline &&
     new Date(task.deadline) < new Date(now)
   ) {
-    const hours = DEADLINE_HOURS[task.urgency_level] || 48;
-    let deduction = 0;
-    if (task.urgency_level === "critical") deduction = 10;
-    else if (task.urgency_level === "high") deduction = 5;
-    else if (task.urgency_level === "medium") deduction = 3;
-    else deduction = 1;
+    const deduction = DEDUCTION_MAP[task.urgency_level] || 1;
 
     db.prepare(
-      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ?, status = 'overdue' WHERE id = ?",
+      "UPDATE collaboration_tasks SET is_overdue = 1, score_deducted = ? WHERE id = ?",
     ).run(deduction, task.id);
 
     db.prepare(
@@ -575,7 +577,7 @@ const checkOverdueAndDeduct = (task, now) => {
       now,
     );
 
-    return { is_overdue: 1, score_deducted: deduction, status: "overdue" };
+    return { is_overdue: 1, score_deducted: deduction };
   }
   return null;
 };
